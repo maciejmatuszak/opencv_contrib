@@ -89,7 +89,7 @@ struct CV_EXPORTS Template
 /**
  * \brief Represents a modality operating over an image pyramid.
  */
-class QuantizedPyramid
+class CV_EXPORTS QuantizedPyramid
 {
 public:
   // Virtual destructor
