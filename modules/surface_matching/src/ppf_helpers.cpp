@@ -55,54 +55,91 @@ void getRandomRotation(double R[9]);
 void meanCovLocalPC(const float* pc, const int ws, const int point_count, double CovMat[3][3], double Mean[4]);
 void meanCovLocalPCInd(const float* pc, const int* Indices, const int ws, const int point_count, double CovMat[3][3], double Mean[4]);
 
+static std::vector<std::string> split(const std::string &text, char sep) {
+  std::vector<std::string> tokens;
+  std::size_t start = 0, end = 0;
+  while ((end = text.find(sep, start)) != std::string::npos) {
+    tokens.push_back(text.substr(start, end - start));
+    start = end + 1;
+  }
+  tokens.push_back(text.substr(start));
+  return tokens;
+}
+
+
+
 Mat loadPLYSimple(const char* fileName, int withNormals)
 {
   Mat cloud;
-  int numVertices=0;
+  int numVertices = 0;
+  int numCols = 3;
+  int has_normals = 0;
 
   std::ifstream ifs(fileName);
 
   if (!ifs.is_open())
-  {
-    printf("Cannot open file...\n");
-    return Mat();
-  }
+    CV_Error(Error::StsError, String("Error opening input file: ") + String(fileName) + "\n");
 
   std::string str;
-  while (str.substr(0, 10) !="end_header")
+  while (str.substr(0, 10) != "end_header")
   {
-    std::string entry = str.substr(0, 14);
-    if (entry == "element vertex")
+    std::vector<std::string> tokens = split(str,' ');
+    if (tokens.size() == 3)
     {
-      numVertices = atoi(str.substr(15, str.size()-15).c_str());
+      if (tokens[0] == "element" && tokens[1] == "vertex")
+      {
+        numVertices = atoi(tokens[2].c_str());
+      }
+      else if (tokens[0] == "property")
+      {
+        if (tokens[2] == "nx" || tokens[2] == "normal_x")
+        {
+          has_normals = -1;
+          numCols += 3;
+        }
+        else if (tokens[2] == "r" || tokens[2] == "red")
+        {
+          //has_color = true;
+          numCols += 3;
+        }
+        else if (tokens[2] == "a" || tokens[2] == "alpha")
+        {
+          //has_alpha = true;
+          numCols += 1;
+        }
+      }
     }
+    else if (tokens.size() > 1 && tokens[0] == "format" && tokens[1] != "ascii")
+      CV_Error(Error::StsBadArg, String("Cannot read file, only ascii ply format is currently supported..."));
     std::getline(ifs, str);
   }
+  withNormals &= has_normals;
 
-  if (withNormals)
-    cloud=Mat(numVertices, 6, CV_32FC1);
-  else
-    cloud=Mat(numVertices, 3, CV_32FC1);
+  cloud = Mat(numVertices, withNormals ? 6 : 3, CV_32FC1);
 
   for (int i = 0; i < numVertices; i++)
   {
-    float* data = (float*)(&cloud.data[i*cloud.step[0]]);
+    float* data = cloud.ptr<float>(i);
+    int col = 0;
+    for (; col < (withNormals ? 6 : 3); ++col)
+    {
+      ifs >> data[col];
+    }
+    for (; col < numCols; ++col)
+    {
+      float tmp;
+      ifs >> tmp;
+    }
     if (withNormals)
     {
-      ifs >> data[0] >> data[1] >> data[2] >> data[3] >> data[4] >> data[5];
-
       // normalize to unit norm
       double norm = sqrt(data[3]*data[3] + data[4]*data[4] + data[5]*data[5]);
       if (norm>0.00001)
       {
-        data[3]/=(float)norm;
-        data[4]/=(float)norm;
-        data[5]/=(float)norm;
+        data[3]/=static_cast<float>(norm);
+        data[4]/=static_cast<float>(norm);
+        data[5]/=static_cast<float>(norm);
       }
-    }
-    else
-    {
-      ifs >> data[0] >> data[1] >> data[2];
     }
   }
 
@@ -114,12 +151,8 @@ void writePLY(Mat PC, const char* FileName)
 {
   std::ofstream outFile( FileName );
 
-  if ( !outFile )
-  {
-    //cerr << "Error opening output file: " << FileName << "!" << endl;
-    printf("Error opening output file: %s!\n", FileName);
-    exit( 1 );
-  }
+  if ( !outFile.is_open() )
+    CV_Error(Error::StsError, String("Error opening output file: ") + String(FileName) + "\n");
 
   ////
   // Header
@@ -148,7 +181,7 @@ void writePLY(Mat PC, const char* FileName)
 
   for ( int pi = 0; pi < pointNum; ++pi )
   {
-    const float* point = (float*)(&PC.data[ pi*PC.step ]);
+    const float* point = PC.ptr<float>(pi);
 
     outFile << point[0] << " "<<point[1]<<" "<<point[2];
 
@@ -167,12 +200,8 @@ void writePLYVisibleNormals(Mat PC, const char* FileName)
 {
   std::ofstream outFile(FileName);
 
-  if (!outFile)
-  {
-    //cerr << "Error opening output file: " << FileName << "!" << endl;
-    printf("Error opening output file: %s!\n", FileName);
-    exit(1);
-  }
+  if (!outFile.is_open())
+    CV_Error(Error::StsError, String("Error opening output file: ") + String(FileName) + "\n");
 
   ////
   // Header
@@ -202,7 +231,7 @@ void writePLYVisibleNormals(Mat PC, const char* FileName)
 
   for (int pi = 0; pi < pointNum; ++pi)
   {
-    const float* point = (float*)(&PC.data[pi*PC.step]);
+    const float* point = PC.ptr<float>(pi);
 
     outFile << point[0] << " " << point[1] << " " << point[2];
 
@@ -295,7 +324,7 @@ Mat samplePCByQuantization(Mat pc, float xrange[2], float yrange[2], float zrang
   //#pragma omp parallel for
   for (int i=0; i<pc.rows; i++)
   {
-    const float* point = (float*)(&pc.data[i * pc.step]);
+    const float* point = pc.ptr<float>(i);
 
     // quantize a point
     const int xCell =(int) ((float)numSamplesDim*(point[0]-xrange[0])/xr);
@@ -342,7 +371,7 @@ Mat samplePCByQuantization(Mat pc, float xrange[2], float yrange[2], float zrang
         for (int j=0; j<cn; j++)
         {
           const int ptInd = curCell[j];
-          float* point = (float*)(&pc.data[ptInd * pc.step]);
+          float* point = pc.ptr<float>(ptInd);
           const double dx = point[0]-xc;
           const double dy = point[1]-yc;
           const double dz = point[2]-zc;
@@ -380,7 +409,7 @@ Mat samplePCByQuantization(Mat pc, float xrange[2], float yrange[2], float zrang
         for (int j=0; j<cn; j++)
         {
           const int ptInd = curCell[j];
-          float* point = (float*)(&pc.data[ptInd * pc.step]);
+          float* point = pc.ptr<float>(ptInd);
 
           px += (double)point[0];
           py += (double)point[1];
@@ -399,7 +428,7 @@ Mat samplePCByQuantization(Mat pc, float xrange[2], float yrange[2], float zrang
 
       }
 
-      float *pcData = (float*)(&pcSampled.data[c*pcSampled.step[0]]);
+      float *pcData = pcSampled.ptr<float>(c);
       pcData[0]=(float)px;
       pcData[1]=(float)py;
       pcData[2]=(float)pz;
@@ -530,7 +559,7 @@ Mat transPCCoeff(Mat pc, float scale, float Cx, float Cy, float Cz, float MinVal
   return pcn;
 }
 
-Mat transformPCPose(Mat pc, double Pose[16])
+Mat transformPCPose(Mat pc, const double Pose[16])
 {
   Mat pct = Mat(pc.rows, pc.cols, CV_32F);
 
@@ -542,8 +571,8 @@ Mat transformPCPose(Mat pc, double Pose[16])
 #endif
   for (int i=0; i<pc.rows; i++)
   {
-    const float *pcData = (float*)(&pc.data[i*pc.step]);
-    float *pcDataT = (float*)(&pct.data[i*pct.step]);
+    const float *pcData = pc.ptr<float>(i);
+    float *pcDataT = pct.ptr<float>(i);
     const float *n1 = &pcData[3];
     float *nT = &pcDataT[3];
 
@@ -720,7 +749,7 @@ void meanCovLocalPCInd(const float* pc, const int* Indices, const int ws, const 
 
 }
 
-CV_EXPORTS int computeNormalsPC3d(const Mat& PC, Mat& PCNormals, const int NumNeighbors, const bool FlipViewpoint, const double viewpoint[3])
+CV_EXPORTS int computeNormalsPC3d(const Mat& PC, Mat& PCNormals, const int NumNeighbors, const bool FlipViewpoint, const Vec3d& viewpoint)
 {
   int i;
 
@@ -738,7 +767,7 @@ CV_EXPORTS int computeNormalsPC3d(const Mat& PC, Mat& PCNormals, const int NumNe
 
   for (i=0; i<PC.rows; i++)
   {
-    const float* src = (float*)(&PC.data[i*PC.step]);
+    const float* src = PC.ptr<float>(i);
     float* dst = (float*)(&dataset[i*3]);
 
     dst[0] = src[0];
@@ -763,7 +792,7 @@ CV_EXPORTS int computeNormalsPC3d(const Mat& PC, Mat& PCNormals, const int NumNe
   {
     double C[3][3], mu[4];
     const float* pci = &dataset[i*3];
-    float* pcr = (float*)(&PCNormals.data[i*PCNormals.step]);
+    float* pcr = PCNormals.ptr<float>(i);
     double nr[3];
 
     int* indLocal = &indices[i*NumNeighbors];
